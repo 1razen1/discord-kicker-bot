@@ -19,11 +19,16 @@ try:
 except FileNotFoundError:
     settings = {}
 
+def save_settings():
+    with open(SETTINGS_FILE, "w") as f:
+        json.dump(settings, f)
+
+def get_user_data(user_id):
+    return settings.get(str(user_id), {})
+
 def get_user_offset(user_id):
-    user_data = settings.get(str(user_id))
-    if isinstance(user_data, dict) and "offset" in user_data:
-        return user_data["offset"]
-    return 0
+    data = get_user_data(user_id)
+    return data.get("offset", 0)
 
 def get_local_time(user_id):
     offset = get_user_offset(user_id)
@@ -49,26 +54,23 @@ async def kicker_loop():
                 continue
 
             user_id = str(member.id)
-            user_data = settings.get(user_id)
+            user_data = get_user_data(user_id)
             if not user_data:
                 continue
 
-            # Always apply timezone offset
-            offset = get_user_offset(user_id)
+            offset = user_data.get("offset", 0)
             local_now = (now_utc + timedelta(minutes=offset)).time()
             current_minutes = local_now.hour * 60 + local_now.minute
 
             try:
-                # Debug voice state
                 print(f"👤 {member} | Voice: {member.voice}")
 
                 if not member.voice or not member.voice.channel:
                     print(f"⚠️ {member} not in a voice channel, skipping.")
                     continue
 
-                if isinstance(user_data, str):
-                    # Single time
-                    target_time = datetime.strptime(user_data, "%H:%M").time()
+                if "time" in user_data:
+                    target_time = datetime.strptime(user_data["time"], "%H:%M").time()
                     target_minutes = target_time.hour * 60 + target_time.minute
                     diff = abs(current_minutes - target_minutes)
                     print(f"⏰ Checking time for {member}: now={current_minutes}, target={target_minutes}, diff={diff}")
@@ -76,8 +78,7 @@ async def kicker_loop():
                         await member.move_to(None)
                         print(f"✅ Disconnected {member} from voice at {local_now}")
 
-                elif isinstance(user_data, dict) and "range" in user_data:
-                    # Range check
+                elif "range" in user_data:
                     start_s, end_s = user_data["range"]
                     start_time = datetime.strptime(start_s, "%H:%M").time()
                     end_time = datetime.strptime(end_s, "%H:%M").time()
@@ -88,7 +89,6 @@ async def kicker_loop():
                     if start_minutes < end_minutes:
                         in_range = start_minutes <= current_minutes <= end_minutes
                     else:
-                        # Overnight range
                         in_range = current_minutes >= start_minutes or current_minutes <= end_minutes
 
                     print(f"🕑 Checking range for {member}: now={current_minutes}, range={start_minutes}-{end_minutes}, in_range={in_range}")
@@ -99,15 +99,13 @@ async def kicker_loop():
             except Exception as e:
                 print(f"❌ Error processing {member}: {e}")
 
-def save_settings():
-    with open(SETTINGS_FILE, "w") as f:
-        json.dump(settings, f)
-
 @tree.command(name="settime", description="Set your daily kick time (HH:MM)")
 @app_commands.describe(time="Time in HH:MM")
 async def settime(interaction: discord.Interaction, time: str):
     user_id = str(interaction.user.id)
-    settings[user_id] = time
+    user_data = get_user_data(user_id)
+    user_data["time"] = time
+    settings[user_id] = user_data
     save_settings()
     await interaction.response.send_message(
         f"✅ Your daily kick **time** is set to **{time}**. You'll be kicked at this time every day.",
@@ -118,7 +116,9 @@ async def settime(interaction: discord.Interaction, time: str):
 @app_commands.describe(start="Start time (HH:MM)", end="End time (HH:MM)")
 async def setrange(interaction: discord.Interaction, start: str, end: str):
     user_id = str(interaction.user.id)
-    settings[user_id] = {"range": [start, end]}
+    user_data = get_user_data(user_id)
+    user_data["range"] = [start, end]
+    settings[user_id] = user_data
     save_settings()
     await interaction.response.send_message(
         f"✅ Your kick **range** is set from **{start}** to **{end}**. You'll be kicked repeatedly in this window.",
@@ -128,8 +128,10 @@ async def setrange(interaction: discord.Interaction, start: str, end: str):
 @tree.command(name="removetime", description="Remove your daily kick time")
 async def removetime(interaction: discord.Interaction):
     user_id = str(interaction.user.id)
-    if user_id in settings and isinstance(settings[user_id], str):
-        del settings[user_id]
+    user_data = get_user_data(user_id)
+    if "time" in user_data:
+        del user_data["time"]
+        settings[user_id] = user_data
         save_settings()
         await interaction.response.send_message(
             "✅ Your daily kick **time** has been removed.",
@@ -144,8 +146,10 @@ async def removetime(interaction: discord.Interaction):
 @tree.command(name="removerange", description="Remove your kick range")
 async def removerange(interaction: discord.Interaction):
     user_id = str(interaction.user.id)
-    if user_id in settings and isinstance(settings[user_id], dict) and "range" in settings[user_id]:
-        del settings[user_id]
+    user_data = get_user_data(user_id)
+    if "range" in user_data:
+        del user_data["range"]
+        settings[user_id] = user_data
         save_settings()
         await interaction.response.send_message(
             "✅ Your kick **range** has been removed.",
@@ -164,7 +168,10 @@ async def settimezone(interaction: discord.Interaction, current_time: str):
         now_utc = datetime.utcnow()
         local = datetime.strptime(current_time, "%H:%M")
         offset_minutes = (local.hour * 60 + local.minute) - (now_utc.hour * 60 + now_utc.minute)
-        settings[str(interaction.user.id)] = {"offset": offset_minutes}
+        user_id = str(interaction.user.id)
+        user_data = get_user_data(user_id)
+        user_data["offset"] = offset_minutes
+        settings[user_id] = user_data
         save_settings()
         await interaction.response.send_message(
             f"✅ Your timezone offset has been set to **{offset_minutes:+} minutes** from UTC.",
@@ -179,7 +186,7 @@ async def settimezone(interaction: discord.Interaction, current_time: str):
 @tree.command(name="status", description="Show your current kicking settings")
 async def status(interaction: discord.Interaction):
     user_id = str(interaction.user.id)
-    user_data = settings.get(user_id)
+    user_data = get_user_data(user_id)
     if not user_data:
         await interaction.response.send_message(
             "ℹ️ You don't have any kicking settings yet.",
@@ -188,13 +195,12 @@ async def status(interaction: discord.Interaction):
         return
 
     lines = []
-    if isinstance(user_data, str):
-        lines.append(f"⏰ Daily kick time: **{user_data}**")
-    elif isinstance(user_data, dict):
-        if "range" in user_data:
-            lines.append(f"🔁 Kick range: **{user_data['range'][0]}** to **{user_data['range'][1]}**")
-        if "offset" in user_data:
-            lines.append(f"🌎 Timezone offset: **{user_data['offset']} minutes** from UTC")
+    if "time" in user_data:
+        lines.append(f"⏰ Daily kick time: **{user_data['time']}**")
+    if "range" in user_data:
+        lines.append(f"🔁 Kick range: **{user_data['range'][0]}** to **{user_data['range'][1]}**")
+    if "offset" in user_data:
+        lines.append(f"🌎 Timezone offset: **{user_data['offset']} minutes** from UTC")
 
     msg = "\n".join(lines)
     await interaction.response.send_message(msg, ephemeral=False)
