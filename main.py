@@ -7,6 +7,8 @@ import os
 
 intents = discord.Intents.default()
 intents.members = True
+intents.voice_states = True
+intents.guilds = True
 client = discord.Client(intents=intents)
 tree = app_commands.CommandTree(client)
 
@@ -41,6 +43,7 @@ async def on_ready():
 async def kicker_loop():
     now_utc = datetime.utcnow()
     for guild in client.guilds:
+        print(f"🔎 Checking guild: {guild.name}")
         for member in guild.members:
             if member.bot:
                 continue
@@ -50,35 +53,51 @@ async def kicker_loop():
             if not user_data:
                 continue
 
+            # Always apply timezone offset
             offset = get_user_offset(user_id)
             local_now = (now_utc + timedelta(minutes=offset)).time()
+            current_minutes = local_now.hour * 60 + local_now.minute
 
             try:
-                # Single time check
+                # Debug voice state
+                print(f"👤 {member} | Voice: {member.voice}")
+
+                if not member.voice or not member.voice.channel:
+                    print(f"⚠️ {member} not in a voice channel, skipping.")
+                    continue
+
                 if isinstance(user_data, str):
+                    # Single time
                     target_time = datetime.strptime(user_data, "%H:%M").time()
-                    diff = abs((local_now.hour * 60 + local_now.minute) - (target_time.hour * 60 + target_time.minute))
+                    target_minutes = target_time.hour * 60 + target_time.minute
+                    diff = abs(current_minutes - target_minutes)
+                    print(f"⏰ Checking time for {member}: now={current_minutes}, target={target_minutes}, diff={diff}")
                     if diff <= 1:
                         await member.move_to(None)
-                        print(f"✅ Kicked {member} at {local_now}")
+                        print(f"✅ Disconnected {member} from voice at {local_now}")
 
-                # Range check
                 elif isinstance(user_data, dict) and "range" in user_data:
+                    # Range check
                     start_s, end_s = user_data["range"]
                     start_time = datetime.strptime(start_s, "%H:%M").time()
                     end_time = datetime.strptime(end_s, "%H:%M").time()
+                    start_minutes = start_time.hour * 60 + start_time.minute
+                    end_minutes = end_time.hour * 60 + end_time.minute
 
-                    if start_time < end_time:
-                        in_range = start_time <= local_now <= end_time
+                    in_range = False
+                    if start_minutes < end_minutes:
+                        in_range = start_minutes <= current_minutes <= end_minutes
                     else:
-                        in_range = local_now >= start_time or local_now <= end_time
+                        # Overnight range
+                        in_range = current_minutes >= start_minutes or current_minutes <= end_minutes
 
+                    print(f"🕑 Checking range for {member}: now={current_minutes}, range={start_minutes}-{end_minutes}, in_range={in_range}")
                     if in_range:
                         await member.move_to(None)
-                        print(f"✅ Kicked {member} in range {start_s}-{end_s} at {local_now}")
+                        print(f"✅ Disconnected {member} from voice (range) at {local_now}")
 
             except Exception as e:
-                print(f"Error processing {member}: {e}")
+                print(f"❌ Error processing {member}: {e}")
 
 def save_settings():
     with open(SETTINGS_FILE, "w") as f:
