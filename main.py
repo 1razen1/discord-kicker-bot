@@ -1,16 +1,20 @@
 import discord
-from discord.ext import commands, tasks
+from discord.ext import tasks
+from discord import app_commands
 import asyncio
-import os
 from datetime import datetime, time as dtime
+import os
 import json
 
-intents = discord.Intents.all()
-bot = commands.Bot(command_prefix='/', intents=intents)
+TOKEN = os.getenv('TOKEN')
 
-# In-memory user settings
-user_settings = {}
+intents = discord.Intents.all()
+client = discord.Client(intents=intents)
+tree = app_commands.CommandTree(client)
+
+# Store user settings in JSON
 DATA_FILE = "user_settings.json"
+user_settings = {}
 
 def save_data():
     with open(DATA_FILE, "w") as f:
@@ -24,33 +28,32 @@ def load_data():
 
 load_data()
 
-@bot.event
+@client.event
 async def on_ready():
-    print(f'✨ Logged in as {bot.user}')
+    print(f"✨ Logged in as {client.user}")
+    await tree.sync()
     kicker_loop.start()
 
-# Helper to convert offset
 def apply_offset(t, offset):
     result = (t.hour + offset) % 24
     return dtime(result, t.minute)
 
-@bot.command()
-async def kicktime(ctx, time: str):
-    """
-    User sets their personal daily kick time
-    Usage: /kicktime HH:MM
-    """
+@tree.command(name="kicktime", description="Set your daily kick time (HH:MM)")
+async def kicktime(interaction: discord.Interaction, time: str):
+    author_id = str(interaction.user.id)
     try:
-        author_id = str(ctx.author.id)
         parts = [int(x) for x in time.split(':')]
-        user_time = dtime(hour=parts[0], minute=parts[1])
+        _ = dtime(hour=parts[0], minute=parts[1])
 
         if author_id not in user_settings:
-            await ctx.send(f"🌍 I don't know your timezone yet! Please reply with your current local time (HH:MM).")
-            def check(m): return m.author == ctx.author and ':' in m.content
-            reply = await bot.wait_for('message', check=check, timeout=60)
+            await interaction.response.send_message("🌍 I don't know your timezone yet! Please tell me your current local time (HH:MM).", ephemeral=True)
+            msg = await client.wait_for(
+                "message",
+                check=lambda m: m.author == interaction.user and ':' in m.content,
+                timeout=60
+            )
             now_utc = datetime.utcnow().time()
-            reply_parts = [int(x) for x in reply.content.split(':')]
+            reply_parts = [int(x) for x in msg.content.split(':')]
             local_time = dtime(hour=reply_parts[0], minute=reply_parts[1])
             offset = (local_time.hour - now_utc.hour) % 24
             user_settings[author_id] = {"offset": offset}
@@ -60,30 +63,27 @@ async def kicktime(ctx, time: str):
         user_settings[author_id]["kick_time"] = time
         save_data()
 
-        await ctx.send(f"✨ ✅ **Your daily kick time has been saved!** ⏰\n> **Time (your clock):** {time}\n> **UTC Offset:** {offset}")
+        await interaction.followup.send(f"✅ Your daily kick time is set to **{time}** (UTC offset: {offset}).", ephemeral=True)
     except Exception as e:
         print(e)
-        await ctx.send("❗ **Error:** Please use format `/kicktime HH:MM` (example: `/kicktime 01:30`).")
+        await interaction.response.send_message("❗ **Error:** Please use format `HH:MM` (example: `01:30`).", ephemeral=True)
 
-@bot.command()
-async def setrange(ctx, start: str, end: str):
-    """
-    User sets their restricted kick range
-    Usage: /setrange HH:MM HH:MM
-    """
+@tree.command(name="setrange", description="Set your restricted time range (HH:MM HH:MM)")
+async def setrange(interaction: discord.Interaction, start: str, end: str):
+    author_id = str(interaction.user.id)
     try:
-        author_id = str(ctx.author.id)
-        start_parts = [int(x) for x in start.split(':')]
-        end_parts = [int(x) for x in end.split(':')]
-        start_time = dtime(hour=start_parts[0], minute=start_parts[1])
-        end_time = dtime(hour=end_parts[0], minute=end_parts[1])
+        _ = dtime(hour=int(start.split(':')[0]), minute=int(start.split(':')[1]))
+        _ = dtime(hour=int(end.split(':')[0]), minute=int(end.split(':')[1]))
 
         if author_id not in user_settings:
-            await ctx.send(f"🌍 I don't know your timezone yet! Please reply with your current local time (HH:MM).")
-            def check(m): return m.author == ctx.author and ':' in m.content
-            reply = await bot.wait_for('message', check=check, timeout=60)
+            await interaction.response.send_message("🌍 I don't know your timezone yet! Please tell me your current local time (HH:MM).", ephemeral=True)
+            msg = await client.wait_for(
+                "message",
+                check=lambda m: m.author == interaction.user and ':' in m.content,
+                timeout=60
+            )
             now_utc = datetime.utcnow().time()
-            reply_parts = [int(x) for x in reply.content.split(':')]
+            reply_parts = [int(x) for x in msg.content.split(':')]
             local_time = dtime(hour=reply_parts[0], minute=reply_parts[1])
             offset = (local_time.hour - now_utc.hour) % 24
             user_settings[author_id] = {"offset": offset}
@@ -93,64 +93,69 @@ async def setrange(ctx, start: str, end: str):
         user_settings[author_id]["range"] = [start, end]
         save_data()
 
-        await ctx.send(f"✨ ✅ **Your kick range has been saved!** 🔄\n> **From:** {start}\n> **To:** {end}\n> **UTC Offset:** {offset}")
+        await interaction.response.send_message(f"✅ Your kick range is set from **{start}** to **{end}** (UTC offset: {offset}).", ephemeral=True)
     except Exception as e:
         print(e)
-        await ctx.send("❗ **Error:** Please use format `/setrange HH:MM HH:MM` (example: `/setrange 23:00 08:00`).")
+        await interaction.response.send_message("❗ **Error:** Please use format `HH:MM HH:MM` (example: `23:00 08:00`).", ephemeral=True)
 
-@bot.command()
-async def removetime(ctx):
-    author_id = str(ctx.author.id)
+@tree.command(name="removetime", description="Remove your daily kick time setting")
+async def removetime(interaction: discord.Interaction):
+    author_id = str(interaction.user.id)
     if author_id in user_settings and "kick_time" in user_settings[author_id]:
         del user_settings[author_id]["kick_time"]
         save_data()
-        await ctx.send(f"✅ **Your daily kick time has been removed!** ❌")
+        await interaction.response.send_message("✅ Your daily kick time has been removed.", ephemeral=True)
     else:
-        await ctx.send("ℹ️ You don't have a kick time set.")
+        await interaction.response.send_message("ℹ️ You don't have a kick time set.", ephemeral=True)
 
-@bot.command()
-async def removerange(ctx):
-    author_id = str(ctx.author.id)
+@tree.command(name="removerange", description="Remove your restricted range setting")
+async def removerange(interaction: discord.Interaction):
+    author_id = str(interaction.user.id)
     if author_id in user_settings and "range" in user_settings[author_id]:
         del user_settings[author_id]["range"]
         save_data()
-        await ctx.send(f"✅ **Your kick range has been removed!** ❌")
+        await interaction.response.send_message("✅ Your kick range has been removed.", ephemeral=True)
     else:
-        await ctx.send("ℹ️ You don't have a kick range set.")
+        await interaction.response.send_message("ℹ️ You don't have a kick range set.", ephemeral=True)
 
-@bot.command()
-async def status(ctx):
-    author_id = str(ctx.author.id)
+@tree.command(name="status", description="View your current kick settings")
+async def status(interaction: discord.Interaction):
+    author_id = str(interaction.user.id)
     settings = user_settings.get(author_id)
     if not settings:
-        await ctx.send("ℹ️ You don't have any settings yet.")
+        await interaction.response.send_message("ℹ️ You don't have any settings yet.", ephemeral=True)
         return
 
     offset = settings.get("offset", 0)
-    kick_time = settings.get("kick_time", "None")
-    kick_range = settings.get("range", "None")
+    kick_time = settings.get("kick_time", "Not set")
+    kick_range = settings.get("range", "Not set")
 
-    await ctx.send(f"📋 **Your Settings:**\n> **Kick Time:** {kick_time}\n> **Range:** {kick_range}\n> **UTC Offset:** {offset}")
-
-@bot.command()
-async def help(ctx):
-    await ctx.send(
-        "**🤖 Available Commands:**\n"
-        "• `/kicktime HH:MM` – Set your daily kick time.\n"
-        "• `/setrange START END` – Set your restricted time range.\n"
-        "• `/removetime` – Remove your kick time.\n"
-        "• `/removerange` – Remove your kick range.\n"
-        "• `/status` – View your current settings.\n"
-        "• `/help` – Show this help message."
+    await interaction.response.send_message(
+        f"📋 **Your Settings:**\n• Kick Time: `{kick_time}`\n• Range: `{kick_range}`\n• UTC Offset: `{offset}`",
+        ephemeral=True
     )
+
+@tree.command(name="help", description="Show available commands")
+async def bothelp(interaction: discord.Interaction):
+    help_text = (
+        "**🤖 Bot Slash Commands:**\n"
+        "• `/kicktime HH:MM` — Set your daily kick time.\n"
+        "• `/setrange HH:MM HH:MM` — Set restricted time range.\n"
+        "• `/removetime` — Remove your daily kick time.\n"
+        "• `/removerange` — Remove your restricted range.\n"
+        "• `/status` — View your current settings.\n"
+        "• `/help` — Show this help message."
+    )
+    await interaction.response.send_message(help_text, ephemeral=True)
 
 @tasks.loop(seconds=2)
 async def kicker_loop():
-    for guild in bot.guilds:
+    for guild in client.guilds:
         for vc in guild.voice_channels:
             for member in vc.members:
                 if member.bot:
                     continue
+
                 settings = user_settings.get(str(member.id))
                 if not settings:
                     continue
@@ -189,5 +194,4 @@ async def kicker_loop():
                         except Exception as e:
                             print(f"Error kicking {member}: {e}")
 
-TOKEN = os.getenv('TOKEN')
-bot.run(TOKEN)
+client.run(TOKEN)
