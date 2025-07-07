@@ -33,8 +33,7 @@ def get_local_time(user_id):
 async def on_ready():
     print(f"✅ Logged in as {client.user}")
     try:
-        synced = await tree.sync()
-        print(f"✅ Synced {len(synced)} slash command(s)")
+        await tree.sync()
     except Exception as e:
         print(f"Error syncing commands: {e}")
     kicker_loop.start()
@@ -43,7 +42,6 @@ async def on_ready():
 async def kicker_loop():
     now_utc = datetime.utcnow()
     for guild in client.guilds:
-        print(f"🔎 Checking guild: {guild.name}")
         for member in guild.members:
             if member.bot:
                 continue
@@ -53,26 +51,20 @@ async def kicker_loop():
             if not user_data:
                 continue
 
-            # Always apply timezone offset
             offset = get_user_offset(user_id)
             local_now = (now_utc + timedelta(minutes=offset)).time()
             current_minutes = local_now.hour * 60 + local_now.minute
 
             try:
-                print(f"👤 {member} | Voice: {member.voice}")
-
                 if not member.voice or not member.voice.channel:
-                    print(f"⚠️ {member} not in a voice channel, skipping.")
                     continue
 
                 if isinstance(user_data, str):
                     target_time = datetime.strptime(user_data, "%H:%M").time()
                     target_minutes = target_time.hour * 60 + target_time.minute
                     diff = abs(current_minutes - target_minutes)
-                    print(f"⏰ Checking time for {member}: now={current_minutes}, target={target_minutes}, diff={diff}")
                     if diff <= 1:
                         await member.move_to(None)
-                        print(f"✅ Disconnected {member} from voice at {local_now}")
 
                 elif isinstance(user_data, dict) and "range" in user_data:
                     start_s, end_s = user_data["range"]
@@ -87,13 +79,11 @@ async def kicker_loop():
                     else:
                         in_range = current_minutes >= start_minutes or current_minutes <= end_minutes
 
-                    print(f"🕑 Checking range for {member}: now={current_minutes}, range={start_minutes}-{end_minutes}, in_range={in_range}")
                     if in_range:
                         await member.move_to(None)
-                        print(f"✅ Disconnected {member} from voice (range) at {local_now}")
 
             except Exception as e:
-                print(f"❌ Error processing {member}: {e}")
+                pass  # Silent fail
 
 def save_settings():
     with open(SETTINGS_FILE, "w") as f:
@@ -159,18 +149,15 @@ async def settimezone(interaction: discord.Interaction, current_time: str):
     try:
         now_utc = datetime.utcnow()
         local = datetime.strptime(current_time, "%H:%M")
-        offset_minutes = ((local.hour * 60 + local.minute) - (now_utc.hour * 60 + now_utc.minute)) % 1440
-        if offset_minutes > 720:
-            offset_minutes -= 1440
-
-        user_id = str(interaction.user.id)
-        user_data = settings.get(user_id, {})
-        if not isinstance(user_data, dict):
-            user_data = {}
-        user_data["offset"] = offset_minutes
-        settings[user_id] = user_data
+        offset_minutes = (local.hour * 60 + local.minute) - (now_utc.hour * 60 + now_utc.minute)
+        if offset_minutes < -720 or offset_minutes > 720:
+            await interaction.response.send_message(
+                "❗ The calculated timezone offset seems too large. Please check your time and try again.",
+                ephemeral=False
+            )
+            return
+        settings[str(interaction.user.id)] = {"offset": offset_minutes}
         save_settings()
-
         await interaction.response.send_message(
             f"✅ Your timezone offset has been set to **{offset_minutes:+} minutes** from UTC.",
             ephemeral=False
